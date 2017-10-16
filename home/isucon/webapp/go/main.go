@@ -52,9 +52,6 @@ func main() {
 	m.Use(sessions.Sessions("isucon_go_session", store))
 
 	m.Use(martini.Static("../public"))
-	m.Use(render.Renderer(render.Options{
-		Layout: "layout",
-	}))
 
 	m.Get("/", func(r render.Render, session sessions.Session) {
 		r.HTML(200, "index", map[string]string{"Flash": getFlash(session, "notice")})
