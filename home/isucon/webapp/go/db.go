@@ -4,7 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
-	"time"
+
+	"github.com/garyburd/redigo/redis"
 )
 
 var (
@@ -14,25 +15,46 @@ var (
 	ErrWrongPassword = errors.New("Wrong password")
 )
 
+const (
+	KeyLoginFailureCountByUserID = "login_failure_count:user_id"
+	KeyLoginFailureCountByIP     = "login_failure_count:ip"
+)
+
 func createLoginLog(succeeded bool, remoteAddr, login string, user *User) error {
-	succ := 0
+	conn := pool.Get()
+	defer conn.Close()
+
+	var errs []error
+
 	if succeeded {
-		succ = 1
+		_, err := conn.Do("HSET", KeyLoginFailureCountByIP, remoteAddr, 0)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if user != nil {
+			_, err := conn.Do("HSET", KeyLoginFailureCountByUserID, user.ID, 0)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
+	} else {
+		_, err := conn.Do("HINCRBY", KeyLoginFailureCountByIP, remoteAddr, 1)
+		if err != nil {
+			errs = append(errs, err)
+		}
+		if user != nil {
+			_, err := conn.Do("HINCRBY", KeyLoginFailureCountByUserID, user.ID, 1)
+			if err != nil {
+				errs = append(errs, err)
+			}
+		}
 	}
 
-	var userId sql.NullInt64
-	if user != nil {
-		userId.Int64 = int64(user.ID)
-		userId.Valid = true
+	if len(errs) > 0 {
+		return errs[0]
 	}
 
-	_, err := db.Exec(
-		"INSERT INTO login_log (`created_at`, `user_id`, `login`, `ip`, `succeeded`) "+
-			"VALUES (?,?,?,?,?)",
-		time.Now(), userId, login, remoteAddr, succ,
-	)
-
-	return err
+	return nil
 }
 
 func isLockedUser(user *User) (bool, error) {
@@ -40,43 +62,33 @@ func isLockedUser(user *User) (bool, error) {
 		return false, nil
 	}
 
-	var ni sql.NullInt64
-	row := db.QueryRow(
-		"SELECT COUNT(1) AS failures FROM login_log WHERE "+
-			"user_id = ? AND id > IFNULL((select id from login_log where user_id = ? AND "+
-			"succeeded = 1 ORDER BY id DESC LIMIT 1), 0);",
-		user.ID, user.ID,
-	)
-	err := row.Scan(&ni)
+	conn := pool.Get()
+	defer conn.Close()
+	cnt, err := redis.Int(conn.Do("HGET", KeyLoginFailureCountByUserID, user.ID))
 
 	switch {
-	case err == sql.ErrNoRows:
+	case err == redis.ErrNil:
 		return false, nil
 	case err != nil:
 		return false, err
 	}
 
-	return UserLockThreshold <= int(ni.Int64), nil
+	return UserLockThreshold <= cnt, nil
 }
 
 func isBannedIP(ip string) (bool, error) {
-	var ni sql.NullInt64
-	row := db.QueryRow(
-		"SELECT COUNT(1) AS failures FROM login_log WHERE "+
-			"ip = ? AND id > IFNULL((select id from login_log where ip = ? AND "+
-			"succeeded = 1 ORDER BY id DESC LIMIT 1), 0);",
-		ip, ip,
-	)
-	err := row.Scan(&ni)
+	conn := pool.Get()
+	defer conn.Close()
+	cnt, err := redis.Int(conn.Do("HGET", KeyLoginFailureCountByIP, ip))
 
 	switch {
-	case err == sql.ErrNoRows:
+	case err == redis.ErrNil:
 		return false, nil
 	case err != nil:
 		return false, err
 	}
 
-	return IPBanThreshold <= int(ni.Int64), nil
+	return IPBanThreshold <= cnt, nil
 }
 
 func attemptLogin(req *http.Request) (*User, error) {
@@ -146,133 +158,41 @@ func getCurrentUser(userId interface{}) *User {
 func bannedIPs() []string {
 	ips := []string{}
 
-	rows, err := db.Query(
-		"SELECT ip FROM "+
-			"(SELECT ip, MAX(succeeded) as max_succeeded, COUNT(1) as cnt FROM login_log GROUP BY ip) "+
-			"AS t0 WHERE t0.max_succeeded = 0 AND t0.cnt >= ?",
-		IPBanThreshold,
-	)
+	conn := pool.Get()
+	defer conn.Close()
+
+	cntByIP, err := redis.IntMap(conn.Do("HGETALL", KeyLoginFailureCountByIP))
 
 	if err != nil {
 		return ips
 	}
 
-	defer rows.Close()
-	for rows.Next() {
-		var ip string
-
-		if err := rows.Scan(&ip); err != nil {
-			return ips
-		}
-		ips = append(ips, ip)
-	}
-	if err := rows.Err(); err != nil {
-		return ips
-	}
-
-	rowsB, err := db.Query(
-		"SELECT ip, MAX(id) AS last_login_id FROM login_log WHERE succeeded = 1 GROUP by ip",
-	)
-
-	if err != nil {
-		return ips
-	}
-
-	defer rowsB.Close()
-	for rowsB.Next() {
-		var ip string
-		var lastLoginId int
-
-		if err := rows.Scan(&ip, &lastLoginId); err != nil {
-			return ips
-		}
-
-		var count int
-
-		err = db.QueryRow(
-			"SELECT COUNT(1) AS cnt FROM login_log WHERE ip = ? AND ? < id",
-			ip, lastLoginId,
-		).Scan(&count)
-
-		if err != nil {
-			return ips
-		}
-
-		if IPBanThreshold <= count {
+	for ip, cnt := range cntByIP {
+		if IPBanThreshold <= cnt {
 			ips = append(ips, ip)
 		}
-	}
-	if err := rowsB.Err(); err != nil {
-		return ips
 	}
 
 	return ips
 }
 
 func lockedUsers() []string {
-	userIds := []string{}
+	userIDs := []string{}
 
-	rows, err := db.Query(
-		"SELECT user_id, login FROM "+
-			"(SELECT user_id, login, MAX(succeeded) as max_succeeded, COUNT(1) as cnt FROM login_log GROUP BY user_id) "+
-			"AS t0 WHERE t0.user_id IS NOT NULL AND t0.max_succeeded = 0 AND t0.cnt >= ?",
-		UserLockThreshold,
-	)
+	conn := pool.Get()
+	defer conn.Close()
+
+	cntByUserID, err := redis.IntMap(conn.Do("HGETALL", KeyLoginFailureCountByUserID))
 
 	if err != nil {
-		return userIds
+		return userIDs
 	}
 
-	defer rows.Close()
-	for rows.Next() {
-		var userId int
-		var login string
-
-		if err := rows.Scan(&userId, &login); err != nil {
-			return userIds
-		}
-		userIds = append(userIds, login)
-	}
-	if err := rows.Err(); err != nil {
-		return userIds
-	}
-
-	rowsB, err := db.Query(
-		"SELECT user_id, login, MAX(id) AS last_login_id FROM login_log WHERE user_id IS NOT NULL AND succeeded = 1 GROUP BY user_id",
-	)
-
-	if err != nil {
-		return userIds
-	}
-
-	defer rowsB.Close()
-	for rowsB.Next() {
-		var userId int
-		var login string
-		var lastLoginId int
-
-		if err := rowsB.Scan(&userId, &login, &lastLoginId); err != nil {
-			return userIds
-		}
-
-		var count int
-
-		err = db.QueryRow(
-			"SELECT COUNT(1) AS cnt FROM login_log WHERE user_id = ? AND ? < id",
-			userId, lastLoginId,
-		).Scan(&count)
-
-		if err != nil {
-			return userIds
-		}
-
-		if UserLockThreshold <= count {
-			userIds = append(userIds, login)
+	for userID, cnt := range cntByUserID {
+		if UserLockThreshold <= cnt {
+			userIDs = append(userIDs, userID)
 		}
 	}
-	if err := rowsB.Err(); err != nil {
-		return userIds
-	}
 
-	return userIds
+	return userIDs
 }
