@@ -3,9 +3,10 @@ package main
 import (
 	"crypto/sha256"
 	"fmt"
-	"github.com/martini-contrib/sessions"
 	"io"
 	"os"
+
+	"github.com/gin-contrib/sessions"
 )
 
 func getEnv(key string, def string) string {
