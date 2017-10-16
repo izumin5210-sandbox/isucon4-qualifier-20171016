@@ -1,7 +1,9 @@
 package main
 
 import (
-	"time"
+	"fmt"
+
+	"github.com/garyburd/redigo/redis"
 )
 
 type User struct {
@@ -16,28 +18,32 @@ type User struct {
 type LastLogin struct {
 	Login     string
 	IP        string
-	CreatedAt time.Time
+	CreatedAt string
+}
+
+const (
+	KeyLastLoginIP   = "ip"
+	KeyLastLoginTime = "time"
+)
+
+func (u *User) getLastLoginKey() string {
+	return fmt.Sprintf("last_login:%d", u.ID)
 }
 
 func (u *User) getLastLogin() *LastLogin {
-	rows, err := db.Query(
-		"SELECT login, ip, created_at FROM login_log WHERE succeeded = 1 AND user_id = ? ORDER BY id DESC LIMIT 2",
-		u.ID,
-	)
+	conn := pool.Get()
+	defer conn.Close()
+
+	m, err := redis.StringMap(conn.Do("HGETALL", u.getLastLoginKey()))
 
 	if err != nil {
 		return nil
 	}
 
-	defer rows.Close()
-	for rows.Next() {
-		u.LastLogin = &LastLogin{}
-		err = rows.Scan(&u.LastLogin.Login, &u.LastLogin.IP, &u.LastLogin.CreatedAt)
-		if err != nil {
-			u.LastLogin = nil
-			return nil
-		}
-	}
+	u.LastLogin = &LastLogin{}
+	u.LastLogin.Login = u.Login
+	u.LastLogin.IP = m[KeyLastLoginIP]
+	u.LastLogin.CreatedAt = m[KeyLastLoginTime]
 
 	return u.LastLogin
 }

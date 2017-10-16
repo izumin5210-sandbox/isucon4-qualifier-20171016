@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/garyburd/redigo/redis"
 )
@@ -33,6 +34,14 @@ func createLoginLog(succeeded bool, remoteAddr, login string, user *User) error 
 		}
 		if user != nil {
 			_, err := conn.Do("HSET", KeyLoginFailureCountByUserID, user.ID, 0)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			_, err = conn.Do("HSET", user.getLastLoginKey(), KeyLastLoginIP, remoteAddr)
+			if err != nil {
+				errs = append(errs, err)
+			}
+			_, err = conn.Do("HSET", user.getLastLoginKey(), KeyLastLoginTime, time.Now().Format("2006-01-02 15:04:05"))
 			if err != nil {
 				errs = append(errs, err)
 			}
