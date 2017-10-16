@@ -47,13 +47,14 @@ func init() {
 
 func main() {
 	r := gin.Default()
+	r.LoadHTMLGlob("templates/*")
 
 	store := sessions.NewCookieStore([]byte("secret-isucon"))
 	r.Use(sessions.Sessions("isucon_go_session", store))
 
 	r.GET("/", func(c *gin.Context) {
 		session := sessions.Default(c)
-		c.HTML(200, "index", map[string]string{"Flash": getFlash(session, "notice")})
+		c.HTML(200, "index", gin.H{"Flash": getFlash(session, "notice")})
 	})
 
 	r.POST("/login", func(c *gin.Context) {
@@ -95,7 +96,7 @@ func main() {
 	})
 
 	r.GET("/report", func(c *gin.Context) {
-		c.JSON(200, map[string][]string{
+		c.JSON(200, gin.H{
 			"banned_ips":   bannedIPs(),
 			"locked_users": lockedUsers(),
 		})
