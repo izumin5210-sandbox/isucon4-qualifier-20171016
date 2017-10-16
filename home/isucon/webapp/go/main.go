@@ -51,8 +51,6 @@ func main() {
 	store := sessions.NewCookieStore([]byte("secret-isucon"))
 	m.Use(sessions.Sessions("isucon_go_session", store))
 
-	m.Use(martini.Static("../public"))
-
 	m.Get("/", func(r render.Render, session sessions.Session) {
 		r.HTML(200, "index", map[string]string{"Flash": getFlash(session, "notice")})
 	})
