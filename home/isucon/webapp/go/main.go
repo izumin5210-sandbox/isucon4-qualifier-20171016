@@ -59,6 +59,7 @@ func main() {
 
 	r.POST("/login", func(c *gin.Context) {
 		session := sessions.Default(c)
+		defer session.Save()
 		user, err := attemptLogin(c.Request)
 
 		notice := ""
@@ -83,6 +84,7 @@ func main() {
 
 	r.GET("/mypage", func(c *gin.Context) {
 		session := sessions.Default(c)
+		defer session.Save()
 		currentUser := getCurrentUser(session.Get("user_id"))
 
 		if currentUser == nil {
