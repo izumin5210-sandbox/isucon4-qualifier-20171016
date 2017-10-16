@@ -54,7 +54,7 @@ func main() {
 
 	r.GET("/", func(c *gin.Context) {
 		session := sessions.Default(c)
-		c.HTML(200, "index", gin.H{"Flash": getFlash(session, "notice")})
+		c.HTML(200, "index.tmpl", gin.H{"Flash": getFlash(session, "notice")})
 	})
 
 	r.POST("/login", func(c *gin.Context) {
@@ -92,7 +92,7 @@ func main() {
 		}
 
 		currentUser.getLastLogin()
-		c.HTML(200, "mypage", currentUser)
+		c.HTML(200, "mypage.tmpl", currentUser)
 	})
 
 	r.GET("/report", func(c *gin.Context) {
