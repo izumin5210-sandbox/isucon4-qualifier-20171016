@@ -5,13 +5,16 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/garyburd/redigo/redis"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 )
 
 var db *sql.DB
+var pool *redis.Pool
 var (
 	UserLockThreshold int
 	IPBanThreshold    int
@@ -32,6 +35,14 @@ func init() {
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
 		panic(err)
+	}
+
+	pool = &redis.Pool{
+		MaxIdle:     3,
+		IdleTimeout: 10 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp", ":6379")
+		},
 	}
 
 	UserLockThreshold, err = strconv.Atoi(getEnv("ISU4_USER_LOCK_THRESHOLD", "3"))
